@@ -9,7 +9,7 @@ public class ConquerProxy
 {
     private List<IConquerProtocolHandler> handlers;
     private Dictionary<string, int> serverPorts = new Dictionary<string, int>() {
-        { "Login", 9958 }, { "Game", 5816 }, { "Logging", 5817 }
+        { "Login", 9958 }, { "Game", 5816 }
     };
 
     // Constructeur : initialisation des handlers
