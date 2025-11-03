@@ -1,0 +1,46 @@
+# Build directories
+CoProxyApp/bin/
+CoProxyApp/obj/
+
+# Visual Studio Code settings
+.vscode/
+
+# User-specific files
+*.swp
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.vspscc
+
+# Dotnet-specific
+*.dbmdl
+*.pdb
+*.cache
+*.log
+*.vs/
+*.DS_Store
+
+# Resharper
+*_ReSharper.*
+*.DotSettings.user
+
+# NuGet Packages
+**/packages/
+# NuGet restore
+.nuget/
+# Dotnet restore cache
+CoProxyApp/.vs/
+CoProxyApp/.vsconfig
+
+# Test Results
+TestResults/
+*.TestResults/
+
+# OS Generated Files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Others
+_ReSharper*/
