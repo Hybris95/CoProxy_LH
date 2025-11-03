@@ -8,25 +8,15 @@ using System.Linq;
 public class ConquerProxy
 {
     private List<IConquerProtocolHandler> handlers;
-    private Dictionary<string, int> serverPorts = new Dictionary<string, int>() {
-        { "Login", 9958 }, { "Game", 5816 }
-    };
+    private Dictionary<string, int> serverPorts;
+    private IConquerProtocolHandler selectedHandler;
 
-    // Constructeur : initialisation des handlers
-    public ConquerProxy()
+    // Constructor accepts ports and handler to use
+    public ConquerProxy(Dictionary<string, int> ports, IConquerProtocolHandler handler)
     {
-        handlers = new List<IConquerProtocolHandler> {
-            new ConquerClassicLordsHandler()
-            // ...ajoute ici d'autres handlers si besoin
-        };
-    }
-
-    // Point d'entrée du programme
-    public static void Main(string[] args)
-    {
-        Console.WriteLine("Proxy lancé !");
-        var proxy = new ConquerProxy();
-        proxy.Start();
+        handlers = new List<IConquerProtocolHandler> { handler };
+        serverPorts = ports;
+        selectedHandler = handler;
     }
 
     public void Start()
@@ -48,17 +38,11 @@ public class ConquerProxy
             {
                 var client = listener.AcceptTcpClient();
                 var context = new ConnectionContext { TargetServerType = serverType };
-                IConquerProtocolHandler handler = DetectHandler(client);
-                Thread relayThread = new Thread(() => ProxyConnection(client, handler, context));
+                // Use the selected handler directly
+                Thread relayThread = new Thread(() => ProxyConnection(client, selectedHandler, context));
                 relayThread.Start();
             }
         }).Start();
-    }
-
-    private IConquerProtocolHandler DetectHandler(TcpClient client)
-    {
-        // Logique de détection simplifiée
-        return handlers.First();
     }
 
     private void ProxyConnection(TcpClient client, IConquerProtocolHandler handler, ConnectionContext context)
