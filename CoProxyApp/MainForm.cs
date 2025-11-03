@@ -14,7 +14,8 @@ namespace CoProxyApp
         private TextBox GamePortEntry = new TextBox() { Text = "5816", Location = new Point(120, 60), Width = 200 };
         private ComboBox HandlerPicker = new ComboBox() { Location = new Point(120, 100), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
         private Button StartProxyButton = new Button() { Text = "Start Proxy", Location = new Point(120, 140), Width = 200 };
-        private Label StatusLabel = new Label() { Location = new Point(10, 180), Width = 350, ForeColor = Color.Green, Font = new Font(FontFamily.GenericSansSerif, 10, FontStyle.Bold) };
+        private Button StopProxyButton = new Button() { Text = "Stop Proxy", Location = new Point(120, 180), Width = 200 };
+        private Label StatusLabel = new Label() { Location = new Point(10, 220), Width = 350, ForeColor = Color.Green, Font = new Font(FontFamily.GenericSansSerif, 10, FontStyle.Bold) };
 
         public MainForm()
         {
@@ -45,6 +46,8 @@ namespace CoProxyApp
             Label handlerLabel = new Label() { Text = "Select Handler:", Location = new Point(10, 100) };
 
             StartProxyButton.Click += OnStartProxyClicked;
+            StopProxyButton.Click += OnStopProxyClicked;
+            StopProxyButton.Enabled = false;
 
             this.Controls.Add(loginLabel);
             this.Controls.Add(LoginPortEntry);
@@ -53,6 +56,7 @@ namespace CoProxyApp
             this.Controls.Add(handlerLabel);
             this.Controls.Add(HandlerPicker);
             this.Controls.Add(StartProxyButton);
+            this.Controls.Add(StopProxyButton);
             this.Controls.Add(StatusLabel);
         }
 
@@ -79,9 +83,24 @@ namespace CoProxyApp
             proxy = new ConquerProxy(ports, selectedHandler);
             proxy.Start();
             StartProxyButton.Enabled = false;
+            StopProxyButton.Enabled = true;
 
             StatusLabel.ForeColor = Color.Green;
             StatusLabel.Text = $"Proxy started on Login:{loginPort}, Game:{gamePort}";
+        }
+
+        private void OnStopProxyClicked(object? sender, EventArgs e)
+        {
+            if (proxy is null)
+            {
+                return;
+            }
+            proxy.Stop();
+            StartProxyButton.Enabled = true;
+            StopProxyButton.Enabled = false;
+
+            StatusLabel.ForeColor = Color.Red;
+            StatusLabel.Text = $"Proxy stopped!";
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
