@@ -78,9 +78,20 @@ namespace CoProxyApp
 
             proxy = new ConquerProxy(ports, selectedHandler);
             proxy.Start();
+            StartProxyButton.Enabled = false;
 
             StatusLabel.ForeColor = Color.Green;
             StatusLabel.Text = $"Proxy started on Login:{loginPort}, Game:{gamePort}";
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            base.OnFormClosing(e);
+
+            if (proxy != null)
+            {
+                proxy.Stop();
+            }
         }
     }
 }
