@@ -16,10 +16,24 @@ namespace CoProxyApp
         private ComboBox HandlerPicker = new ComboBox() { Location = new Point(120, 140), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
         private Button StartProxyButton = new Button() { Text = "Start Proxy", Location = new Point(120, 180), Width = 200 };
         private Button StopProxyButton = new Button() { Text = "Stop Proxy", Location = new Point(120, 220), Width = 200 };
-        private Label StatusLabel = new Label() { Location = new Point(10, 260), Width = 350, ForeColor = Color.Green, Font = new Font(FontFamily.GenericSansSerif, 10, FontStyle.Bold) };
+        private Label StatusLabel = new Label() { Location = new Point(10, 260), Width = 420, ForeColor = Color.Green, Font = new Font(FontFamily.GenericSansSerif, 10, FontStyle.Bold) };
 
-        // Store client connection counts per server type for limiting to 1 client each
+        // Icones d'état (feux) pour connexions
+        private PictureBox LoginClientStatusIcon = new PictureBox() { Location = new Point(340, 20), Size = new Size(16, 16) };
+        private PictureBox LoginServerStatusIcon = new PictureBox() { Location = new Point(340, 50), Size = new Size(16, 16) };
+        private PictureBox GameClientStatusIcon = new PictureBox() { Location = new Point(340, 90), Size = new Size(16, 16) };
+        private PictureBox GameServerStatusIcon = new PictureBox() { Location = new Point(340, 120), Size = new Size(16, 16) };
+
+        // Labels fixes de description des statuts
+        private Label LoginClientLabelDesc = new Label() { Text = "Login Client", Location = new Point(260, 20), AutoSize = true };
+        private Label LoginServerLabelDesc = new Label() { Text = "Login Server", Location = new Point(260, 50), AutoSize = true };
+        private Label GameClientLabelDesc = new Label() { Text = "Game Client", Location = new Point(260, 90), AutoSize = true };
+        private Label GameServerLabelDesc = new Label() { Text = "Game Server", Location = new Point(260, 120), AutoSize = true };
+
         private Dictionary<string, int> activeClientCounts = new Dictionary<string, int> { { "Login", 0 }, { "Game", 0 } };
+
+        private Bitmap greenCircle;
+        private Bitmap redCircle;
 
         public MainForm()
         {
@@ -36,12 +50,14 @@ namespace CoProxyApp
             }
             if (HandlerPicker.Items.Count > 0)
                 HandlerPicker.SelectedIndex = 0;
+
+            UpdateStatusIcons(false, false, false, false);
         }
 
         private void InitializeControls()
         {
             this.Text = "Conquer Proxy Configuration";
-            this.Size = new Size(400, 350);
+            this.Size = new Size(450, 330);
 
             Label loginLabel = new Label() { Text = "Login Port:", Location = new Point(10, 20) };
             Label gameLabel = new Label() { Text = "Game Port:", Location = new Point(10, 60) };
@@ -63,6 +79,55 @@ namespace CoProxyApp
             this.Controls.Add(StartProxyButton);
             this.Controls.Add(StopProxyButton);
             this.Controls.Add(StatusLabel);
+
+            // Ajout des descriptions des icônes statut
+            this.Controls.Add(LoginClientLabelDesc);
+            this.Controls.Add(LoginServerLabelDesc);
+            this.Controls.Add(GameClientLabelDesc);
+            this.Controls.Add(GameServerLabelDesc);
+
+            // Ajout des icônes statut
+            this.Controls.Add(LoginClientStatusIcon);
+            this.Controls.Add(LoginServerStatusIcon);
+            this.Controls.Add(GameClientStatusIcon);
+            this.Controls.Add(GameServerStatusIcon);
+
+            // Création des images cercle rouge/vert
+            greenCircle = CreateCircleBitmap(Color.Green, 16);
+            redCircle = CreateCircleBitmap(Color.Red, 16);
+
+            // Initialiser tous statuts à rouge (inactifs)
+            SetStatusIcon(LoginClientStatusIcon, false);
+            SetStatusIcon(LoginServerStatusIcon, false);
+            SetStatusIcon(GameClientStatusIcon, false);
+            SetStatusIcon(GameServerStatusIcon, false);
+        }
+
+        private Bitmap CreateCircleBitmap(Color color, int diameter)
+        {
+            Bitmap bmp = new Bitmap(diameter, diameter);
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Color.Transparent);
+                using (Brush b = new SolidBrush(color))
+                {
+                    g.FillEllipse(b, 0, 0, diameter - 1, diameter - 1);
+                }
+            }
+            return bmp;
+        }
+
+        private void SetStatusIcon(PictureBox pb, bool state)
+        {
+            pb.Image = state ? greenCircle : redCircle;
+        }
+
+        private void UpdateStatusIcons(bool loginClient, bool loginServer, bool gameClient, bool gameServer)
+        {
+            SetStatusIcon(LoginClientStatusIcon, loginClient);
+            SetStatusIcon(LoginServerStatusIcon, loginServer);
+            SetStatusIcon(GameClientStatusIcon, gameClient);
+            SetStatusIcon(GameServerStatusIcon, gameServer);
         }
 
         private void OnStartProxyClicked(object? sender, EventArgs e)
@@ -92,11 +157,57 @@ namespace CoProxyApp
             var ports = new Dictionary<string, int> { { "Login", loginPort }, { "Game", gamePort } };
             var selectedHandler = handlers[HandlerPicker.SelectedIndex];
 
-            // Reset active client counts on new proxy start
             activeClientCounts["Login"] = 0;
             activeClientCounts["Game"] = 0;
 
             proxy = new ConquerProxyLimitedClients(ports, selectedHandler, RemoteServerAddressEntry.Text, activeClientCounts);
+
+            proxy.OnClientConnected += (serverType, connected) =>
+            {
+                this.Invoke(() =>
+                {
+                    switch (serverType)
+                    {
+                        case "Login":
+                            UpdateStatusIcons(connected,
+                                LoginServerStatusIcon.Image == greenCircle,
+                                GameClientStatusIcon.Image == greenCircle,
+                                GameServerStatusIcon.Image == greenCircle);
+                            break;
+                        case "Game":
+                            UpdateStatusIcons(
+                                LoginClientStatusIcon.Image == greenCircle,
+                                LoginServerStatusIcon.Image == greenCircle,
+                                connected,
+                                GameServerStatusIcon.Image == greenCircle);
+                            break;
+                    }
+                });
+            };
+
+            proxy.OnRemoteConnected += (serverType, connected) =>
+            {
+                this.Invoke(() =>
+                {
+                    switch (serverType)
+                    {
+                        case "Login":
+                            UpdateStatusIcons(LoginClientStatusIcon.Image == greenCircle,
+                                connected,
+                                GameClientStatusIcon.Image == greenCircle,
+                                GameServerStatusIcon.Image == greenCircle);
+                            break;
+                        case "Game":
+                            UpdateStatusIcons(
+                                LoginClientStatusIcon.Image == greenCircle,
+                                LoginServerStatusIcon.Image == greenCircle,
+                                GameClientStatusIcon.Image == greenCircle,
+                                connected);
+                            break;
+                    }
+                });
+            };
+
             proxy.Start();
 
             StartProxyButton.Enabled = false;
@@ -116,8 +227,10 @@ namespace CoProxyApp
             StartProxyButton.Enabled = true;
             StopProxyButton.Enabled = false;
 
+            UpdateStatusIcons(false, false, false, false);
+
             StatusLabel.ForeColor = Color.Red;
-            StatusLabel.Text = $"Proxy stopped!";
+            StatusLabel.Text = "Proxy stopped!";
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)

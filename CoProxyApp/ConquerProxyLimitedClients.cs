@@ -17,11 +17,19 @@ public class ConquerProxyLimitedClients
     // Suivi du nombre de clients connectés par serveur (limite à 1)
     private Dictionary<string, int> activeClientCounts;
 
+    // Indicateur si GameServer est connecté (verrou exclusif sur LoginServer)
+    private bool isGameServerConnected = false;
+    private object connectionLock = new object();
+
     // Stockage des listeners et threads pour gestion propre
     private List<TcpListener> listeners = new();
     private volatile bool isRunning = false;
 
     private List<Thread> listenerThreads = new();
+
+    // Événements pour informer sur états clients et serveurs distants
+    public event Action<string, bool>? OnClientConnected;
+    public event Action<string, bool>? OnRemoteConnected;
 
     public ConquerProxyLimitedClients(Dictionary<string, int> ports, IConquerProtocolHandler handler, string remoteAddress, Dictionary<string, int> clientCounts)
     {
@@ -93,21 +101,35 @@ public class ConquerProxyLimitedClients
                     break; // Listener arrêté ou erreur socket
                 }
 
-                // Limiter à 1 client par serveur
-                lock (activeClientCounts)
+                lock (connectionLock)
                 {
+                    // Limitation à 1 client par serveur
                     if (activeClientCounts.TryGetValue(serverType, out int count) && count >= 1)
                     {
-                        // Refuser connexion supplémentaire
                         client.Close();
                         continue;
                     }
 
-                    // Accepter nouveau client
+                    // Interdire login tant que game est connecté
+                    if (serverType == "Login" && isGameServerConnected)
+                    {
+                        client.Close();
+                        continue;
+                    }
+
+                    // Si connexion game acceptée, verrouiller login
+                    if (serverType == "Game")
+                    {
+                        isGameServerConnected = true;
+                    }
+
                     activeClientCounts[serverType] = count + 1;
                 }
 
+                OnClientConnected?.Invoke(serverType, true);
+
                 var context = new ConnectionContext { TargetServerType = serverType };
+
                 Thread relayThread = new Thread(() =>
                 {
                     try
@@ -116,14 +138,19 @@ public class ConquerProxyLimitedClients
                     }
                     finally
                     {
-                        // Décrémenter le compteur à la fermeture de la connexion
-                        lock (activeClientCounts)
+                        lock (connectionLock)
                         {
                             if (activeClientCounts.TryGetValue(serverType, out int c))
                             {
                                 activeClientCounts[serverType] = Math.Max(0, c - 1);
                             }
+                            if (serverType == "Game")
+                            {
+                                isGameServerConnected = false;
+                            }
                         }
+                        OnClientConnected?.Invoke(serverType, false);
+                        OnRemoteConnected?.Invoke(serverType, false);
                     }
                 });
                 relayThread.Start();
@@ -131,7 +158,7 @@ public class ConquerProxyLimitedClients
         }
         catch (Exception)
         {
-            // Erreurs inattendues ignorées ou à logger
+            // Ignorer ou logger
         }
     }
 
@@ -139,34 +166,28 @@ public class ConquerProxyLimitedClients
     {
         using NetworkStream clientStream = client.GetStream();
 
-        // Validation de la clé non nulle
-        if (string.IsNullOrEmpty(context.TargetServerType))
+        if (string.IsNullOrEmpty(context.TargetServerType) ||
+            !serverPorts.TryGetValue(context.TargetServerType, out int remotePort))
         {
             client.Close();
             return;
-        }
-
-        // Connexion au serveur distant sur le même port que le listener du type serveur
-        if (!serverPorts.TryGetValue(context.TargetServerType, out int remotePort))
-        {
-            client.Close();
-            return; // Port inconnu pour ce type serveur
         }
 
         TcpClient remoteServerClient = new TcpClient();
         try
         {
             remoteServerClient.Connect(remoteServerAddress, remotePort);
+            OnRemoteConnected?.Invoke(context.TargetServerType, true);
         }
         catch (Exception)
         {
             client.Close();
-            return; // Impossible de connecter le serveur distant
+            OnRemoteConnected?.Invoke(context.TargetServerType, false);
+            return;
         }
 
         using NetworkStream serverStream = remoteServerClient.GetStream();
 
-        // Buffers pour échange bidirectionnel
         byte[] bufferClient = new byte[4096];
         byte[] bufferServer = new byte[4096];
 
@@ -215,5 +236,7 @@ public class ConquerProxyLimitedClients
 
         client.Close();
         remoteServerClient.Close();
+
+        OnRemoteConnected?.Invoke(context.TargetServerType, false);
     }
 }
