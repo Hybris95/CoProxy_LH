@@ -1,12 +1,12 @@
+using System;
+using System.Windows.Forms;
+
 /*
  File: Program.cs
  Responsibility:
    - Application entry point for the WinForms app.
    - Initializes application configuration and launches MainForm.
 */
-
-using System;
-using System.Windows.Forms;
 
 namespace CoProxyApp
 {

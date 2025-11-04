@@ -1,3 +1,11 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Windows.Forms;
+
 /*
  File: MainForm.cs
  Responsibility:
@@ -5,61 +13,56 @@
    - Provides inputs for Login/Game ports, remote server address, and handler selection.
    - Displays real-time connection status (client and remote) for Login and Game via icons.
    - Starts/stops the proxy and marshals event callbacks to the UI thread.
-
- UI/UX:
-   - Start/Stop buttons manage proxy lifecycle.
-   - Green/Red circular icons reflect connected/disconnected statuses per side/type.
-
- Threading:
-   - Event handlers from proxy are invoked on background threads and marshaled via Control.Invoke.
+   - Provides a packet visualization workbench to assist reverse-engineering:
+       * Live packet list: time, direction, server type, type id, length, tag, summary.
+       * Detail pane: hex dump and parsed fields.
+       * Simple filters: direction, server type, tag text filter.
+   - Uses a TabControl to keep the UI maintainable and logically separated.
 */
-
-using System;
-using System.Collections.Generic;
-using System.Drawing;
-using System.Windows.Forms;
 
 namespace CoProxyApp
 {
-    /// <summary>
-    /// Main WinForms window to configure and control the Conquer proxy.
-    /// </summary>
     public partial class MainForm : Form
     {
         private List<IConquerProtocolHandler> handlers;
         private ConquerProxyLimitedClients? proxy;
 
-        private TextBox LoginPortEntry = new TextBox() { Text = "9958", Location = new Point(120, 20), Width = 200 };
-        private TextBox GamePortEntry = new TextBox() { Text = "5816", Location = new Point(120, 60), Width = 200 };
-        private TextBox RemoteServerAddressEntry = new TextBox() { Text = "127.0.0.1", Location = new Point(120, 100), Width = 200 };
-        private ComboBox HandlerPicker = new ComboBox() { Location = new Point(120, 140), Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
-        private Button StartProxyButton = new Button() { Text = "Start Proxy", Location = new Point(120, 180), Width = 200 };
-        private Button StopProxyButton = new Button() { Text = "Stop Proxy", Location = new Point(120, 220), Width = 200 };
-        private Label StatusLabel = new Label() { Location = new Point(10, 260), Width = 420, ForeColor = Color.Green, Font = new Font(FontFamily.GenericSansSerif, 10, FontStyle.Bold) };
+        // Configuration controls
+        private TextBox LoginPortEntry = new TextBox() { Text = "9958", Width = 120 };
+        private TextBox GamePortEntry = new TextBox() { Text = "5816", Width = 120 };
+        private TextBox RemoteServerAddressEntry = new TextBox() { Text = "127.0.0.1", Width = 180 };
+        private ComboBox HandlerPicker = new ComboBox() { Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
+        private Button StartProxyButton = new Button() { Text = "Start Proxy", Width = 120 };
+        private Button StopProxyButton = new Button() { Text = "Stop Proxy", Width = 120 };
+        private Label StatusLabel = new Label() { AutoSize = true, ForeColor = Color.Green, Font = new Font(FontFamily.GenericSansSerif, 10, FontStyle.Bold) };
 
         // Status indicator icons for connections
-        private PictureBox LoginClientStatusIcon = new PictureBox() { Location = new Point(340, 20), Size = new Size(16, 16) };
-        private PictureBox LoginServerStatusIcon = new PictureBox() { Location = new Point(340, 50), Size = new Size(16, 16) };
-        private PictureBox GameClientStatusIcon = new PictureBox() { Location = new Point(340, 90), Size = new Size(16, 16) };
-        private PictureBox GameServerStatusIcon = new PictureBox() { Location = new Point(340, 120), Size = new Size(16, 16) };
-
-        // Fixed description labels of the statuses
-        private Label LoginClientLabelDesc = new Label() { Text = "Login Client", Location = new Point(260, 20), AutoSize = true };
-        private Label LoginServerLabelDesc = new Label() { Text = "Login Server", Location = new Point(260, 50), AutoSize = true };
-        private Label GameClientLabelDesc = new Label() { Text = "Game Client", Location = new Point(260, 90), AutoSize = true };
-        private Label GameServerLabelDesc = new Label() { Text = "Game Server", Location = new Point(260, 120), AutoSize = true };
+        private PictureBox LoginClientStatusIcon = new PictureBox() { Size = new Size(16, 16) };
+        private PictureBox LoginServerStatusIcon = new PictureBox() { Size = new Size(16, 16) };
+        private PictureBox GameClientStatusIcon = new PictureBox() { Size = new Size(16, 16) };
+        private PictureBox GameServerStatusIcon = new PictureBox() { Size = new Size(16, 16) };
 
         private Dictionary<string, int> activeClientCounts = new Dictionary<string, int> { { "Login", 0 }, { "Game", 0 } };
 
         private Bitmap greenCircle;
         private Bitmap redCircle;
 
-        /// <summary>
-        /// Initializes the form, loads available handlers, and sets initial UI state.
-        /// </summary>
+        // Packet visualization data and controls
+        private BindingList<PacketInfo> packetBinding = new BindingList<PacketInfo>();
+        private ListView packetListView = new ListView();
+        private TextBox packetHexDump = new TextBox();
+        private ListView packetFieldsView = new ListView();
+        private ComboBox filterDirection = new ComboBox();
+        private ComboBox filterServerType = new ComboBox();
+        private TextBox filterTagText = new TextBox();
+        private Button clearPacketsButton = new Button() { Text = "Clear" };
+        private Button exportPacketsButton = new Button() { Text = "Export..." };
+
         public MainForm()
         {
+            InitializeComponent();
             InitializeControls();
+            InitializePacketTab();
 
             handlers = new List<IConquerProtocolHandler>
             {
@@ -76,61 +79,206 @@ namespace CoProxyApp
             UpdateStatusIcons(false, false, false, false);
         }
 
-        /// <summary>
-        /// Creates and configures all controls, wires event handlers, and initializes status icons.
-        /// </summary>
+        private void InitializeComponent()
+        {
+            this.Text = "Conquer Proxy Workbench";
+            this.Size = new Size(1000, 700);
+            this.StartPosition = FormStartPosition.CenterScreen;
+        }
+
         private void InitializeControls()
         {
-            this.Text = "Conquer Proxy Configuration";
-            this.Size = new Size(450, 330);
+            // Build a TabControl with two tabs: Proxy and Packets
+            var tabs = new TabControl() { Dock = DockStyle.Fill };
+            var proxyTab = new TabPage("Proxy");
+            var packetsTab = new TabPage("Packets");
 
-            Label loginLabel = new Label() { Text = "Login Port:", Location = new Point(10, 20) };
-            Label gameLabel = new Label() { Text = "Game Port:", Location = new Point(10, 60) };
-            Label remoteServerLabel = new Label() { Text = "Remote Server IP:", Location = new Point(10, 100) };
-            Label handlerLabel = new Label() { Text = "Select Handler:", Location = new Point(10, 140) };
+            tabs.TabPages.Add(proxyTab);
+            tabs.TabPages.Add(packetsTab);
+
+            this.Controls.Add(tabs);
+
+            // Proxy tab layout using TableLayoutPanel
+            var tlp = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 4,
+                RowCount = 6,
+                AutoSize = true
+            };
+            tlp.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tlp.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tlp.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            for (int i = 0; i < tlp.RowCount; i++)
+                tlp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            // Labels
+            var loginLabel = new Label() { Text = "Login Port:", AutoSize = true };
+            var gameLabel = new Label() { Text = "Game Port:", AutoSize = true };
+            var remoteServerLabel = new Label() { Text = "Remote Server IP:", AutoSize = true };
+            var handlerLabel = new Label() { Text = "Select Handler:", AutoSize = true };
 
             StartProxyButton.Click += OnStartProxyClicked;
             StopProxyButton.Click += OnStopProxyClicked;
             StopProxyButton.Enabled = false;
 
-            this.Controls.Add(loginLabel);
-            this.Controls.Add(LoginPortEntry);
-            this.Controls.Add(gameLabel);
-            this.Controls.Add(GamePortEntry);
-            this.Controls.Add(remoteServerLabel);
-            this.Controls.Add(RemoteServerAddressEntry);
-            this.Controls.Add(handlerLabel);
-            this.Controls.Add(HandlerPicker);
-            this.Controls.Add(StartProxyButton);
-            this.Controls.Add(StopProxyButton);
-            this.Controls.Add(StatusLabel);
+            // Status panel with icons and descriptors
+            var statusPanel = new FlowLayoutPanel() { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false };
+            statusPanel.Controls.Add(CreateStatusBlock("Login Client", LoginClientStatusIcon));
+            statusPanel.Controls.Add(CreateStatusBlock("Login Server", LoginServerStatusIcon));
+            statusPanel.Controls.Add(CreateStatusBlock("Game Client", GameClientStatusIcon));
+            statusPanel.Controls.Add(CreateStatusBlock("Game Server", GameServerStatusIcon));
 
-            // Add status label descriptions
-            this.Controls.Add(LoginClientLabelDesc);
-            this.Controls.Add(LoginServerLabelDesc);
-            this.Controls.Add(GameClientLabelDesc);
-            this.Controls.Add(GameServerLabelDesc);
+            // Add to layout
+            tlp.Controls.Add(loginLabel, 0, 0);
+            tlp.Controls.Add(LoginPortEntry, 1, 0);
+            tlp.Controls.Add(gameLabel, 0, 1);
+            tlp.Controls.Add(GamePortEntry, 1, 1);
+            tlp.Controls.Add(remoteServerLabel, 0, 2);
+            tlp.Controls.Add(RemoteServerAddressEntry, 1, 2);
+            tlp.Controls.Add(handlerLabel, 0, 3);
+            tlp.Controls.Add(HandlerPicker, 1, 3);
+            tlp.Controls.Add(StartProxyButton, 0, 4);
+            tlp.Controls.Add(StopProxyButton, 1, 4);
+            tlp.Controls.Add(StatusLabel, 0, 5);
+            tlp.SetColumnSpan(StatusLabel, 4);
+            tlp.Controls.Add(statusPanel, 2, 0);
+            tlp.SetRowSpan(statusPanel, 4);
 
-            // Add status icons
-            this.Controls.Add(LoginClientStatusIcon);
-            this.Controls.Add(LoginServerStatusIcon);
-            this.Controls.Add(GameClientStatusIcon);
-            this.Controls.Add(GameServerStatusIcon);
+            proxyTab.Controls.Add(tlp);
 
-            // Create green/red circle bitmaps
+            // Create green/red circles
             greenCircle = CreateCircleBitmap(Color.Green, 16);
             redCircle = CreateCircleBitmap(Color.Red, 16);
-
-            // Initialize all status indicators to red (inactive)
             SetStatusIcon(LoginClientStatusIcon, false);
             SetStatusIcon(LoginServerStatusIcon, false);
             SetStatusIcon(GameClientStatusIcon, false);
             SetStatusIcon(GameServerStatusIcon, false);
+
+            // Prepare Packets tab (assigned later)
+            PacketsTab = packetsTab;
         }
 
-        /// <summary>
-        /// Helper to create a filled circular bitmap with the given color and size.
-        /// </summary>
+        // Keep a reference to the Packets tab to add content later
+        private TabPage? PacketsTab;
+
+        private Control CreateStatusBlock(string title, PictureBox icon)
+        {
+            var panel = new FlowLayoutPanel()
+            {
+                FlowDirection = FlowDirection.LeftToRight,
+                AutoSize = true,
+                Margin = new Padding(10, 5, 10, 5)
+            };
+            var label = new Label() { Text = title, AutoSize = true, Margin = new Padding(0, 0, 5, 0) };
+            panel.Controls.Add(label);
+            panel.Controls.Add(icon);
+            return panel;
+        }
+
+        private void InitializePacketTab()
+        {
+            if (PacketsTab == null) return;
+
+            // Filters bar
+            var filtersPanel = new FlowLayoutPanel()
+            {
+                Dock = DockStyle.Top,
+                Height = 32,
+                FlowDirection = FlowDirection.LeftToRight
+            };
+
+            filterDirection.DropDownStyle = ComboBoxStyle.DropDownList;
+            filterDirection.Items.AddRange(new object[] { "All", "ClientToServer", "ServerToClient" });
+            filterDirection.SelectedIndex = 0;
+            filterDirection.SelectedIndexChanged += (_, __) => RefreshPacketList();
+
+            filterServerType.DropDownStyle = ComboBoxStyle.DropDownList;
+            filterServerType.Items.AddRange(new object[] { "All", "Login", "Game" });
+            filterServerType.SelectedIndex = 0;
+            filterServerType.SelectedIndexChanged += (_, __) => RefreshPacketList();
+
+            filterTagText.Width = 160;
+            filterTagText.PlaceholderText = "Tag filter (contains)";
+            filterTagText.TextChanged += (_, __) => RefreshPacketList();
+
+            clearPacketsButton.Click += (_, __) =>
+            {
+                packetBinding.Clear();
+                packetListView.Items.Clear();
+                packetHexDump.Clear();
+                packetFieldsView.Items.Clear();
+            };
+
+            exportPacketsButton.Click += OnExportPackets;
+
+            filtersPanel.Controls.Add(new Label() { Text = "Direction:", AutoSize = true, Padding = new Padding(4, 8, 4, 0) });
+            filtersPanel.Controls.Add(filterDirection);
+            filtersPanel.Controls.Add(new Label() { Text = "Server:", AutoSize = true, Padding = new Padding(12, 8, 4, 0) });
+            filtersPanel.Controls.Add(filterServerType);
+            filtersPanel.Controls.Add(new Label() { Text = "Tag:", AutoSize = true, Padding = new Padding(12, 8, 4, 0) });
+            filtersPanel.Controls.Add(filterTagText);
+            filtersPanel.Controls.Add(clearPacketsButton);
+            filtersPanel.Controls.Add(exportPacketsButton);
+
+            // Split container: top list, bottom details
+            var split = new SplitContainer()
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                SplitterDistance = 300
+            };
+
+            // Packet list
+            packetListView.View = View.Details;
+            packetListView.FullRowSelect = true;
+            packetListView.GridLines = true;
+            packetListView.HideSelection = false;
+            packetListView.Columns.Add("Time", 140);
+            packetListView.Columns.Add("Dir", 90);
+            packetListView.Columns.Add("Server", 70);
+            packetListView.Columns.Add("Type", 80);
+            packetListView.Columns.Add("Length", 70);
+            packetListView.Columns.Add("Tag", 140);
+            packetListView.Columns.Add("Info", 400);
+            packetListView.Dock = DockStyle.Fill;
+            packetListView.SelectedIndexChanged += OnPacketSelected;
+
+            // Detail area with two panels: hex dump and fields
+            var detailsSplit = new SplitContainer()
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterDistance = 600
+            };
+
+            packetHexDump.Multiline = true;
+            packetHexDump.ScrollBars = ScrollBars.Both;
+            packetHexDump.ReadOnly = true;
+            packetHexDump.Font = new Font(FontFamily.GenericMonospace, 9);
+            packetHexDump.Dock = DockStyle.Fill;
+
+            packetFieldsView.View = View.Details;
+            packetFieldsView.FullRowSelect = true;
+            packetFieldsView.GridLines = true;
+            packetFieldsView.Columns.Add("Field", 160);
+            packetFieldsView.Columns.Add("Value", 300);
+            packetFieldsView.Dock = DockStyle.Fill;
+
+            detailsSplit.Panel1.Controls.Add(packetHexDump);
+            detailsSplit.Panel2.Controls.Add(packetFieldsView);
+
+            split.Panel1.Controls.Add(packetListView);
+            split.Panel2.Controls.Add(detailsSplit);
+
+            var container = new Panel() { Dock = DockStyle.Fill };
+            container.Controls.Add(split);
+            container.Controls.Add(filtersPanel);
+
+            PacketsTab.Controls.Add(container);
+        }
+
         private Bitmap CreateCircleBitmap(Color color, int diameter)
         {
             Bitmap bmp = new Bitmap(diameter, diameter);
@@ -145,17 +293,11 @@ namespace CoProxyApp
             return bmp;
         }
 
-        /// <summary>
-        /// Sets the image of a PictureBox to red or green based on state.
-        /// </summary>
         private void SetStatusIcon(PictureBox pb, bool state)
         {
             pb.Image = state ? greenCircle : redCircle;
         }
 
-        /// <summary>
-        /// Updates all status icons in one call.
-        /// </summary>
         private void UpdateStatusIcons(bool loginClient, bool loginServer, bool gameClient, bool gameServer)
         {
             SetStatusIcon(LoginClientStatusIcon, loginClient);
@@ -164,9 +306,6 @@ namespace CoProxyApp
             SetStatusIcon(GameServerStatusIcon, gameServer);
         }
 
-        /// <summary>
-        /// Starts the proxy using input values; validates inputs and wires proxy events to UI updates.
-        /// </summary>
         private void OnStartProxyClicked(object? sender, EventArgs e)
         {
             if (!int.TryParse(LoginPortEntry.Text, out int loginPort) ||
@@ -201,7 +340,7 @@ namespace CoProxyApp
 
             proxy.OnClientConnected += (serverType, connected) =>
             {
-                this.Invoke(() =>
+                this.BeginInvoke(() =>
                 {
                     switch (serverType)
                     {
@@ -224,7 +363,7 @@ namespace CoProxyApp
 
             proxy.OnRemoteConnected += (serverType, connected) =>
             {
-                this.Invoke(() =>
+                this.BeginInvoke(() =>
                 {
                     switch (serverType)
                     {
@@ -245,6 +384,12 @@ namespace CoProxyApp
                 });
             };
 
+            proxy.OnPacketCaptured += info =>
+            {
+                // UI thread marshal
+                this.BeginInvoke(() => AddPacketToList(info));
+            };
+
             proxy.Start();
 
             StartProxyButton.Enabled = false;
@@ -254,9 +399,6 @@ namespace CoProxyApp
             StatusLabel.Text = $"Proxy started on Login:{loginPort}, Game:{gamePort} relaying to {RemoteServerAddressEntry.Text}";
         }
 
-        /// <summary>
-        /// Stops the proxy and resets UI indicators.
-        /// </summary>
         private void OnStopProxyClicked(object? sender, EventArgs e)
         {
             if (proxy is null)
@@ -273,9 +415,6 @@ namespace CoProxyApp
             StatusLabel.Text = "Proxy stopped!";
         }
 
-        /// <summary>
-        /// Ensures the proxy is stopped when the form is closing.
-        /// </summary>
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             base.OnFormClosing(e);
@@ -284,6 +423,243 @@ namespace CoProxyApp
             {
                 proxy.Stop();
             }
+        }
+
+        // ----- Packet visualization helpers -----
+
+        private void AddPacketToList(PacketInfo info)
+        {
+            packetBinding.Add(info);
+
+            if (!PassesFilter(info))
+                return;
+
+            var item = new ListViewItem(new[]
+            {
+                info.TimestampUtc.ToLocalTime().ToString("HH:mm:ss.fff"),
+                info.Direction.ToString(),
+                info.ServerType,
+                $"0x{info.Type:X4}",
+                info.DeclaredLength.ToString(),
+                info.Tag,
+                info.Description
+            })
+            {
+                Tag = info
+            };
+
+            // Color by direction
+            if (info.Direction == PacketDirection.ClientToServer)
+            {
+                item.ForeColor = Color.DarkBlue;
+            }
+            else
+            {
+                item.ForeColor = Color.DarkGreen;
+            }
+
+            packetListView.Items.Add(item);
+            // Keep newest visible
+            item.EnsureVisible();
+        }
+
+        private bool PassesFilter(PacketInfo info)
+        {
+            if (filterDirection.SelectedIndex > 0)
+            {
+                var wantDir = (filterDirection.SelectedItem?.ToString() ?? "All");
+                if (!string.Equals(info.Direction.ToString(), wantDir, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            if (filterServerType.SelectedIndex > 0)
+            {
+                var wantServer = (filterServerType.SelectedItem?.ToString() ?? "All");
+                if (!string.Equals(info.ServerType, wantServer, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            var tagFilter = filterTagText.Text?.Trim();
+            if (!string.IsNullOrEmpty(tagFilter))
+            {
+                if (info.Tag?.IndexOf(tagFilter, StringComparison.OrdinalIgnoreCase) < 0 &&
+                    info.Description?.IndexOf(tagFilter, StringComparison.OrdinalIgnoreCase) < 0)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private void RefreshPacketList()
+        {
+            packetListView.BeginUpdate();
+            try
+            {
+                packetListView.Items.Clear();
+                foreach (var info in packetBinding.Where(PassesFilter))
+                {
+                    var item = new ListViewItem(new[]
+                    {
+                        info.TimestampUtc.ToLocalTime().ToString("HH:mm:ss.fff"),
+                        info.Direction.ToString(),
+                        info.ServerType,
+                        $"0x{info.Type:X4}",
+                        info.DeclaredLength.ToString(),
+                        info.Tag,
+                        info.Description
+                    })
+                    {
+                        Tag = info,
+                        ForeColor = info.Direction == PacketDirection.ClientToServer ? Color.DarkBlue : Color.DarkGreen
+                    };
+                    packetListView.Items.Add(item);
+                }
+            }
+            finally
+            {
+                packetListView.EndUpdate();
+            }
+        }
+
+        private void OnPacketSelected(object? sender, EventArgs e)
+        {
+            if (packetListView.SelectedItems.Count == 0)
+            {
+                packetHexDump.Clear();
+                packetFieldsView.Items.Clear();
+                return;
+            }
+
+            var info = packetListView.SelectedItems[0].Tag as PacketInfo;
+            if (info == null) return;
+
+            // Hex dump (header+payload)
+            packetHexDump.Text = FormatHexDump(info.RawFrame);
+
+            // Fields
+            packetFieldsView.BeginUpdate();
+            try
+            {
+                packetFieldsView.Items.Clear();
+
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "ConnectionId", info.ConnectionId.ToString() }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "ServerType", info.ServerType }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "Direction", info.Direction.ToString() }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "Type", $"0x{info.Type:X4}" }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "DeclaredLength", info.DeclaredLength.ToString() }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "Tag", info.Tag }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "Description", info.Description }));
+
+                foreach (var kv in info.Fields)
+                {
+                    packetFieldsView.Items.Add(new ListViewItem(new[] { kv.Key, kv.Value?.ToString() ?? "" }));
+                }
+            }
+            finally
+            {
+                packetFieldsView.EndUpdate();
+            }
+        }
+
+        private void OnExportPackets(object? sender, EventArgs e)
+        {
+            using var sfd = new SaveFileDialog
+            {
+                Filter = "JSON Lines (*.jsonl)|*.jsonl|CSV (*.csv)|*.csv|Text (*.txt)|*.txt",
+                FileName = $"packets_{DateTime.Now:yyyyMMdd_HHmmss}"
+            };
+            if (sfd.ShowDialog(this) != DialogResult.OK) return;
+
+            try
+            {
+                var path = sfd.FileName;
+                var ext = System.IO.Path.GetExtension(path).ToLowerInvariant();
+                if (ext == ".csv")
+                {
+                    using var w = new System.IO.StreamWriter(path, false, Encoding.UTF8);
+                    w.WriteLine("Time,Direction,Server,Type,Length,Tag,Info");
+                    foreach (var p in packetBinding)
+                    {
+                        w.WriteLine($"{p.TimestampUtc:o},{p.Direction},{p.ServerType},0x{p.Type:X4},{p.DeclaredLength},\"{p.Tag}\",\"{p.Description}\"");
+                    }
+                }
+                else if (ext == ".jsonl")
+                {
+                    using var w = new System.IO.StreamWriter(path, false, Encoding.UTF8);
+                    foreach (var p in packetBinding)
+                    {
+                        var obj = new
+                        {
+                            time = p.TimestampUtc,
+                            direction = p.Direction.ToString(),
+                            server = p.ServerType,
+                            type = p.Type,
+                            length = p.DeclaredLength,
+                            tag = p.Tag,
+                            description = p.Description,
+                            fields = p.Fields,
+                            raw = Convert.ToBase64String(p.RawFrame)
+                        };
+                        string json = System.Text.Json.JsonSerializer.Serialize(obj);
+                        w.WriteLine(json);
+                    }
+                }
+                else
+                {
+                    using var w = new System.IO.StreamWriter(path, false, Encoding.UTF8);
+                    foreach (var p in packetBinding)
+                    {
+                        w.WriteLine($"{p.TimestampUtc:o} {p.Direction} {p.ServerType} Type=0x{p.Type:X4} Len={p.DeclaredLength} Tag={p.Tag} {p.Description}");
+                    }
+                }
+
+                MessageBox.Show(this, "Export completed.", "Export", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Export failed: {ex.Message}", "Export", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        // --- Utility hex dump ---
+        private static string FormatHexDump(byte[] data, int bytesPerLine = 16)
+        {
+            if (data == null || data.Length == 0) return string.Empty;
+
+            var sb = new StringBuilder();
+            for (int i = 0; i < data.Length; i += bytesPerLine)
+            {
+                int count = Math.Min(bytesPerLine, data.Length - i);
+                var slice = new Span<byte>(data, i, count);
+
+                // Offset
+                sb.Append(i.ToString("X4"));
+                sb.Append("  ");
+
+                // Hex bytes
+                for (int j = 0; j < bytesPerLine; j++)
+                {
+                    if (j < count)
+                        sb.Append(slice[j].ToString("X2"));
+                    else
+                        sb.Append("  ");
+                    sb.Append(' ');
+                    if (j == 7) sb.Append(' ');
+                }
+
+                sb.Append(" | ");
+
+                // ASCII
+                for (int j = 0; j < count; j++)
+                {
+                    byte b = slice[j];
+                    sb.Append(b >= 32 && b <= 126 ? (char)b : '.');
+                }
+
+                sb.AppendLine();
+            }
+
+            return sb.ToString();
         }
     }
 }

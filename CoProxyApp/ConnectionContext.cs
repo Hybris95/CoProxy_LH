@@ -2,9 +2,11 @@
  File: ConnectionContext.cs
  Responsibility:
    - Holds per-connection metadata that informs handlers/proxy about the target server
-     type (e.g., "Login", "Game") and any versioning constraints.
+     type (e.g., "Login", "Game"), versioning constraints, and a unique connection id.
    - Can be extended with user/session information as needed.
 */
+
+using System;
 
 /// <summary>
 /// Encapsulates contextual information about a client's connection,
@@ -23,5 +25,13 @@ public class ConnectionContext
     /// </summary>
     public string? Version;
 
-    // Other info like user/session could be added here in the future.
+    /// <summary>
+    /// Unique identifier for this proxied connection lifecycle.
+    /// </summary>
+    public Guid ConnectionId = Guid.NewGuid();
+
+    /// <summary>
+    /// Optional human-friendly label for the connection (e.g., client's endpoint).
+    /// </summary>
+    public string? Label;
 }
