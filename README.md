@@ -8,13 +8,18 @@ A minimal WinForms-based TCP proxy for Conquer Online style servers that:
 - Locks the Login server while a Game client is connected.
 - Exposes connection events used by the UI to show green/red status indicators.
 
-This project includes a basic, pass-through protocol handler (`ConquerClassicLordsHandler`) implementing `IConquerProtocolHandler`. You can extend it to parse and modify packets for specific versions or flavors.
+This project includes an extended protocol handler (`ConquerClassicLordsHandler`) implementing `IConquerProtocolHandler` with:
+- Blowfish-based encryption hooks for client→server payloads (header stays clear-text).
+- Basic Conquer packet parsing (Little Endian header [Length, Type], optional `"TQServer"`/`"TQClient"` footer).
+- Automatic session reconnection logic (backoff and cipher resync on decrypt/parse failures).
 
 ## Table of contents
 
 - Prerequisites
 - Build and run
 - How it works
+- Encryption (Blowfish)
+- Automatic reconnection
 - Adding a new protocol handler
 - Configuration and UX
 - Limitations and notes
@@ -26,7 +31,12 @@ This project includes a basic, pass-through protocol handler (`ConquerClassicLor
 - IDE: Visual Studio 2022 (v17.5+) recommended.
 - .NET SDK: .NET 6.0 or later.
 
-Optional:
+Optional (for real Blowfish encryption):
+- NuGet package: `BouncyCastle.Cryptography` (a.k.a. `BouncyCastle.Crypto`).
+  - Install with: `dotnet add .\CoProxyApp.csproj package BouncyCastle.Cryptography`
+  - Or via Visual Studio NuGet UI.
+
+Notes:
 - Administrator privileges may be required if binding to ports < 1024.
 - Ensure the chosen ports are not in use by other processes.
 
@@ -36,93 +46,126 @@ Optional:
 2. Select build configuration (Debug or Release).
 3. Press F5 (or Start Debugging) to run.
 
-Alternatively, if you have the project file:
+CLI alternative:
 
-- Open a Developer Command Prompt:
-  - `dotnet build`
-  - `dotnet run --project .\CoProxyApp.csproj`
+```
+dotnet build dotnet run --project .\CoProxyApp.csproj
+```
 
 ## How it works
 
 - UI (`MainForm`):
-  - Lets you input local Login and Game ports, remote server IP/hostname, and select a protocol handler.
-  - Displays real-time status:
+  - Inputs: local Login/Game ports, remote server IP/hostname, handler selection.
+  - Status indicators:
     - Login Client and Login Server
     - Game Client and Game Server
-  - Status icons:
-    - Green = connected
-    - Red = disconnected
+  - Green = connected, Red = disconnected.
 
 - Proxy core (`ConquerProxyLimitedClients`):
-  - Starts one `TcpListener` per configured server type.
+  - Starts one `TcpListener` per server type.
   - Accepts at most one client per server type.
-  - When a Game client connects, Login is locked (new Login connections are refused) until Game disconnects.
+  - Locks Login while a Game client is connected.
   - For each client:
-    - Connects to the appropriate remote port (by server type).
+    - Connects to the remote endpoint for that server type.
     - Spawns two relay threads:
-      - Client → Server: passes data through the selected `IConquerProtocolHandler`.
-      - Server → Client: forwards raw data back to the client.
+      - Client → Server: passes data through `IConquerProtocolHandler.HandlePacket`.
+      - Server → Client: raw relay to client.
   - Emits:
     - `OnClientConnected(serverType, bool)`
     - `OnRemoteConnected(serverType, bool)`
 
-- Protocol handler (`IConquerProtocolHandler`):
-  - `HandlePacket(byte[] data, out byte[] modifiedPacket, ConnectionContext context)`: modify or drop packets.
-  - `IsPacketForLoginServer`, `IsPacketForGameServer`: optional helpers (not used by the current proxy which binds per type already).
-  - `ConquerClassicLordsHandler`: simple pass-through example (no modifications).
+- Protocol handler (`ConquerClassicLordsHandler`):
+  - Parses Conquer header: `[Length(ushort), Type(ushort)]` (Little Endian).
+  - Skips optional footers (`"TQServer"`/`"TQClient"`) outside `Length`.
+  - Encrypts/decrypts payload (bytes after header) with Blowfish ECB when enabled.
+  - Applies session-level auto-reconnect/backoff when decryption or parsing fails.
+
+## Encryption (Blowfish)
+
+- The handler supports Blowfish for payload encryption/decryption. The header remains clear-text.
+- It uses an adapter that attempts to load BouncyCastle’s `BlowfishEngine` at runtime:
+  - If found, real Blowfish ECB is used in 8-byte blocks (partial last block is left plain; no padding).
+  - If not found, a non-secure XOR fallback is used to maintain traffic flow. Do NOT use this fallback in production.
+
+To enable real Blowfish:
+- Add the package:
+```
+dotnet add .\CoProxyApp.csproj package BouncyCastle.Cryptography
+```
+
+- Rebuild and run. The handler will automatically detect and use `BlowfishEngine`.
+
+Keying:
+- The handler heuristically enables encryption for the Game server and uses a default key (`"TQClient"` for client→server).
+- Adjust keying or handshake logic per your server patch/version by modifying:
+- `DefaultClientKey` / `DefaultServerKey`
+- `EnsureCipherInitialized(...)`
+
+## Automatic reconnection
+
+- The handler maintains per-connection session state and tracks consecutive decryption/parse failures.
+- On failures:
+- It resets cipher state (to allow re-handshake) and applies exponential backoff (250ms → up to 8s).
+- During backoff, outbound packets are dropped (empty byte array), allowing the client to naturally retry.
+- When backoff expires, the next packet reinitializes the cipher and resumes normal processing.
+
+Note:
+- This is a session-level “reconnect” (cipher resync) implemented inside the handler.
+- Socket-level reconnection (to the upstream server) is already handled by the proxy’s lifecycle.
 
 ## Adding a new protocol handler
 
-1. Create a new class implementing `IConquerProtocolHandler`.
-2. Implement `HandlePacket` to parse and optionally modify outbound packets (client → server).
-3. Optionally implement routing helpers if you later design a single-port multiplexer.
-4. Register your handler in the UI:
-   - Add it to the `handlers` list in `MainForm` constructor.
-   - It will appear in the handler dropdown automatically.
+1. Create a class implementing `IConquerProtocolHandler`.
+2. In `HandlePacket`, parse the header and payload and modify or drop as needed.
+3. Optionally enable your own crypto or routing logic.
 
-Example skeleton:
+Example:
 ```csharp
 public class MyConquerHandler : IConquerProtocolHandler
 {
-    public void HandlePacket(byte[] data, out byte[] modifiedPacket, ConnectionContext context)
-    {
-        // TODO: parse, inspect, modify or drop
-        modifiedPacket = data; // pass-through example
-    }
+  public void HandlePacket(byte[] data, out byte[] modifiedPacket, ConnectionContext context)
+  {
+      // Parse header
+      ushort length = BitConverter.ToUInt16(data, 0);
+      ushort type = BitConverter.ToUInt16(data, 2);
+      // ...inspect/modify payload...
+      modifiedPacket = data;
+  }
 
-    public bool IsPacketForLoginServer(byte[] data) => false;
-    public bool IsPacketForGameServer(byte[] data) => false;
+  public bool IsPacketForLoginServer(byte[] data) => false;
+  public bool IsPacketForGameServer(byte[] data) => false;
 }
 ```
 
 ## Configuration and UX
 
-- Login Port: Local listening port for clients targeting the Login server (e.g., 9958).
-- Game Port: Local listening port for clients targeting the Game server (e.g., 5816).
-- Remote Server IP: The remote server address (the proxy connects to this host).
-  - The proxy assumes the remote uses the same ports per type as configured for local listeners.
-- Handler: Choose the protocol handler for outbound packet interception.
+- Login Port: Local port for Login server traffic (e.g., 9958).
+- Game Port: Local port for Game server traffic (e.g., 5816).
+- Remote Server IP: Remote host to forward to.
+- Handler: Choose the protocol handler (e.g., ConquerClassicLordsHandler).
 
-Start/Stop:
+Buttons:
 
-- Start Proxy: spins up listeners and begins accepting clients.
-- Stop Proxy: shuts down listeners; existing relay threads end when the streams close.
+- Start Proxy: Starts listeners and accepting clients.
+- Stop Proxy: Stops listeners and resets UI indicators.
 
 ## Limitations and notes
 
-- No TLS/SSL or encryption.
-- No packet parsing beyond what your handler implements.
-- No automatic reconnection logic.
+- No TLS/SSL.
+- No packet parsing beyond what the handler implements.
 - No persistent logging included.
-- Single-process, per-instance limits only (1 client per server type).
-- The UI marshals background events via Control.Invoke; avoid long-running work on UI thread.
+- Single-client-per-type limit per running instance.
+- Blowfish ECB is used for simplicity. Some patches may require different modes or header encryption.
+- The XOR fallback is only for development when BouncyCastle is not available.
 
 ## Troubleshooting
 
-- “Invalid port numbers”: Ensure both port fields contain valid integers within 1–65535.
-- “Remote Server IP cannot be empty”: Provide a valid IP/hostname reachable from the machine.
-- Nothing happens on connect:
-  - Check Windows Firewall rules for the chosen ports.
-  - Ensure another process is not already using the port (use netstat -ano).
-- UI icons do not change:
-  - Event handlers run on background threads; the UI already marshals via Invoke, but exceptions during event processing can prevent updates. Check Visual Studio Output/Debug windows.
+- Invalid ports:
+  - Ensure both fields contain integers in range 1–65535.
+- Connections fail:
+  - Check Windows Firewall rules and port availability (netstat -ano).
+- Encryption errors:
+  - Ensure BouncyCastle is installed if real Blowfish is required.
+  - Verify keys (DefaultClientKey/DefaultServerKey) and patch-specific requirements.
+- UI status not updating:
+  - The app marshals events via Invoke; check for unhandled exceptions in the Output window.
