@@ -93,3 +93,36 @@ public class MyConquerHandler : IConquerProtocolHandler
     public bool IsPacketForLoginServer(byte[] data) => false;
     public bool IsPacketForGameServer(byte[] data) => false;
 }
+```
+
+## Configuration and UX
+
+- Login Port: Local listening port for clients targeting the Login server (e.g., 9958).
+- Game Port: Local listening port for clients targeting the Game server (e.g., 5816).
+- Remote Server IP: The remote server address (the proxy connects to this host).
+  - The proxy assumes the remote uses the same ports per type as configured for local listeners.
+- Handler: Choose the protocol handler for outbound packet interception.
+
+Start/Stop:
+
+- Start Proxy: spins up listeners and begins accepting clients.
+- Stop Proxy: shuts down listeners; existing relay threads end when the streams close.
+
+## Limitations and notes
+
+- No TLS/SSL or encryption.
+- No packet parsing beyond what your handler implements.
+- No automatic reconnection logic.
+- No persistent logging included.
+- Single-process, per-instance limits only (1 client per server type).
+- The UI marshals background events via Control.Invoke; avoid long-running work on UI thread.
+
+## Troubleshooting
+
+- “Invalid port numbers”: Ensure both port fields contain valid integers within 1–65535.
+- “Remote Server IP cannot be empty”: Provide a valid IP/hostname reachable from the machine.
+- Nothing happens on connect:
+  - Check Windows Firewall rules for the chosen ports.
+  - Ensure another process is not already using the port (use netstat -ano).
+- UI icons do not change:
+  - Event handlers run on background threads; the UI already marshals via Invoke, but exceptions during event processing can prevent updates. Check Visual Studio Output/Debug windows.
