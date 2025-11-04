@@ -13,7 +13,7 @@ using System.Linq;
        * When a Game client is connected, Login connections are blocked.
    - Relays traffic between a local client and a remote server (by IP + per-type port).
    - Emits events for UI/monitoring when local/remote sides connect or disconnect.
-   - Emits per-packet analysis events for visualization (PacketInfo).
+   - Emits per-packet ConquerPacket events for visualization.
    - Manages lifecycle (Start/Stop), listeners, and relay threads.
 
  Threading Model:
@@ -51,7 +51,7 @@ public class ConquerProxyLimitedClients
     /// <summary>
     /// Raised for each packet observed and analyzed, used by GUI to visualize flows.
     /// </summary>
-    public event Action<PacketInfo>? OnPacketCaptured;
+    public event Action<ConquerPacket>? OnPacketCaptured;
 
     public ConquerProxyLimitedClients(Dictionary<string, int> ports, IConquerProtocolHandler handler, string remoteAddress, Dictionary<string, int> clientCounts)
     {
@@ -229,9 +229,9 @@ public class ConquerProxyLimitedClients
                     if (bytesRead == 0) break;
 
                     var slice = bufferClient.Take(bytesRead).ToArray();
-                    var outBytes = handler.ProcessClientToServer(slice, context, out var info);
+                    var outBytes = handler.ProcessClientToServer(slice, context, out var pkt);
                     // Notify UI about the packet
-                    SafeRaisePacket(info);
+                    SafeRaisePacket(pkt);
 
                     if (outBytes != null && outBytes.Length > 0)
                     {
@@ -253,8 +253,8 @@ public class ConquerProxyLimitedClients
                     if (bytesRead == 0) break;
 
                     var slice = bufferServer.Take(bytesRead).ToArray();
-                    var outBytes = handler.ProcessServerToClient(slice, context, out var info);
-                    SafeRaisePacket(info);
+                    var outBytes = handler.ProcessServerToClient(slice, context, out var pkt);
+                    SafeRaisePacket(pkt);
 
                     if (outBytes != null && outBytes.Length > 0)
                     {
@@ -277,11 +277,11 @@ public class ConquerProxyLimitedClients
         OnRemoteConnected?.Invoke(context.TargetServerType, false);
     }
 
-    private void SafeRaisePacket(PacketInfo info)
+    private void SafeRaisePacket(ConquerPacket pkt)
     {
         try
         {
-            OnPacketCaptured?.Invoke(info);
+            OnPacketCaptured?.Invoke(pkt);
         }
         catch
         {

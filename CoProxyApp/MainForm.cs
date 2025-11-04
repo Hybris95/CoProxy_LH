@@ -48,7 +48,7 @@ namespace CoProxyApp
         private Bitmap redCircle;
 
         // Packet visualization data and controls
-        private BindingList<PacketInfo> packetBinding = new BindingList<PacketInfo>();
+        private BindingList<ConquerPacket> packetBinding = new BindingList<ConquerPacket>();
         private ListView packetListView = new ListView();
         private TextBox packetHexDump = new TextBox();
         private ListView packetFieldsView = new ListView();
@@ -200,7 +200,7 @@ namespace CoProxyApp
             filterServerType.SelectedIndexChanged += (_, __) => RefreshPacketList();
 
             filterTagText.Width = 160;
-            filterTagText.PlaceholderText = "Tag filter (contains)";
+            try { filterTagText.PlaceholderText = "Tag filter (contains)"; } catch { /* Older frameworks may lack PlaceholderText */ }
             filterTagText.TextChanged += (_, __) => RefreshPacketList();
 
             clearPacketsButton.Click += (_, __) =>
@@ -340,7 +340,7 @@ namespace CoProxyApp
 
             proxy.OnClientConnected += (serverType, connected) =>
             {
-                this.BeginInvoke(() =>
+                this.BeginInvoke(new Action(() =>
                 {
                     switch (serverType)
                     {
@@ -358,12 +358,12 @@ namespace CoProxyApp
                                 GameServerStatusIcon.Image == greenCircle);
                             break;
                     }
-                });
+                }));
             };
 
             proxy.OnRemoteConnected += (serverType, connected) =>
             {
-                this.BeginInvoke(() =>
+                this.BeginInvoke(new Action(() =>
                 {
                     switch (serverType)
                     {
@@ -381,13 +381,13 @@ namespace CoProxyApp
                                 connected);
                             break;
                     }
-                });
+                }));
             };
 
-            proxy.OnPacketCaptured += info =>
+            proxy.OnPacketCaptured += pkt =>
             {
                 // UI thread marshal
-                this.BeginInvoke(() => AddPacketToList(info));
+                this.BeginInvoke(new Action(() => AddPacketToList(pkt)));
             };
 
             proxy.Start();
@@ -427,63 +427,55 @@ namespace CoProxyApp
 
         // ----- Packet visualization helpers -----
 
-        private void AddPacketToList(PacketInfo info)
+        private void AddPacketToList(ConquerPacket pkt)
         {
-            packetBinding.Add(info);
+            packetBinding.Add(pkt);
 
-            if (!PassesFilter(info))
+            if (!PassesFilter(pkt))
                 return;
 
             var item = new ListViewItem(new[]
             {
-                info.TimestampUtc.ToLocalTime().ToString("HH:mm:ss.fff"),
-                info.Direction.ToString(),
-                info.ServerType,
-                $"0x{info.Type:X4}",
-                info.DeclaredLength.ToString(),
-                info.Tag,
-                info.Description
+                pkt.TimestampUtc.ToLocalTime().ToString("HH:mm:ss.fff"),
+                pkt.Direction.ToString(),
+                pkt.ServerType,
+                $"0x{pkt.Type:X4}",
+                pkt.DeclaredLength.ToString(),
+                pkt.Tag,
+                pkt.Description
             })
             {
-                Tag = info
+                Tag = pkt
             };
 
             // Color by direction
-            if (info.Direction == PacketDirection.ClientToServer)
-            {
-                item.ForeColor = Color.DarkBlue;
-            }
-            else
-            {
-                item.ForeColor = Color.DarkGreen;
-            }
+            item.ForeColor = pkt.Direction == PacketDirection.ClientToServer ? Color.DarkBlue : Color.DarkGreen;
 
             packetListView.Items.Add(item);
-            // Keep newest visible
             item.EnsureVisible();
         }
 
-        private bool PassesFilter(PacketInfo info)
+        private bool PassesFilter(ConquerPacket pkt)
         {
             if (filterDirection.SelectedIndex > 0)
             {
                 var wantDir = (filterDirection.SelectedItem?.ToString() ?? "All");
-                if (!string.Equals(info.Direction.ToString(), wantDir, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(pkt.Direction.ToString(), wantDir, StringComparison.OrdinalIgnoreCase))
                     return false;
             }
 
             if (filterServerType.SelectedIndex > 0)
             {
                 var wantServer = (filterServerType.SelectedItem?.ToString() ?? "All");
-                if (!string.Equals(info.ServerType, wantServer, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(pkt.ServerType, wantServer, StringComparison.OrdinalIgnoreCase))
                     return false;
             }
 
             var tagFilter = filterTagText.Text?.Trim();
             if (!string.IsNullOrEmpty(tagFilter))
             {
-                if (info.Tag?.IndexOf(tagFilter, StringComparison.OrdinalIgnoreCase) < 0 &&
-                    info.Description?.IndexOf(tagFilter, StringComparison.OrdinalIgnoreCase) < 0)
+                if (pkt.Tag?.IndexOf(tagFilter, StringComparison.OrdinalIgnoreCase) < 0 &&
+                    pkt.Description?.IndexOf(tagFilter, StringComparison.OrdinalIgnoreCase) < 0)
                     return false;
             }
 
@@ -496,21 +488,21 @@ namespace CoProxyApp
             try
             {
                 packetListView.Items.Clear();
-                foreach (var info in packetBinding.Where(PassesFilter))
+                foreach (var pkt in packetBinding.Where(PassesFilter))
                 {
                     var item = new ListViewItem(new[]
                     {
-                        info.TimestampUtc.ToLocalTime().ToString("HH:mm:ss.fff"),
-                        info.Direction.ToString(),
-                        info.ServerType,
-                        $"0x{info.Type:X4}",
-                        info.DeclaredLength.ToString(),
-                        info.Tag,
-                        info.Description
+                        pkt.TimestampUtc.ToLocalTime().ToString("HH:mm:ss.fff"),
+                        pkt.Direction.ToString(),
+                        pkt.ServerType,
+                        $"0x{pkt.Type:X4}",
+                        pkt.DeclaredLength.ToString(),
+                        pkt.Tag,
+                        pkt.Description
                     })
                     {
-                        Tag = info,
-                        ForeColor = info.Direction == PacketDirection.ClientToServer ? Color.DarkBlue : Color.DarkGreen
+                        Tag = pkt,
+                        ForeColor = pkt.Direction == PacketDirection.ClientToServer ? Color.DarkBlue : Color.DarkGreen
                     };
                     packetListView.Items.Add(item);
                 }
@@ -530,11 +522,11 @@ namespace CoProxyApp
                 return;
             }
 
-            var info = packetListView.SelectedItems[0].Tag as PacketInfo;
-            if (info == null) return;
+            var pkt = packetListView.SelectedItems[0].Tag as ConquerPacket;
+            if (pkt == null) return;
 
             // Hex dump (header+payload)
-            packetHexDump.Text = FormatHexDump(info.RawFrame);
+            packetHexDump.Text = FormatHexDump(pkt.RawFrame);
 
             // Fields
             packetFieldsView.BeginUpdate();
@@ -542,15 +534,15 @@ namespace CoProxyApp
             {
                 packetFieldsView.Items.Clear();
 
-                packetFieldsView.Items.Add(new ListViewItem(new[] { "ConnectionId", info.ConnectionId.ToString() }));
-                packetFieldsView.Items.Add(new ListViewItem(new[] { "ServerType", info.ServerType }));
-                packetFieldsView.Items.Add(new ListViewItem(new[] { "Direction", info.Direction.ToString() }));
-                packetFieldsView.Items.Add(new ListViewItem(new[] { "Type", $"0x{info.Type:X4}" }));
-                packetFieldsView.Items.Add(new ListViewItem(new[] { "DeclaredLength", info.DeclaredLength.ToString() }));
-                packetFieldsView.Items.Add(new ListViewItem(new[] { "Tag", info.Tag }));
-                packetFieldsView.Items.Add(new ListViewItem(new[] { "Description", info.Description }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "ConnectionId", pkt.ConnectionId.ToString() }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "ServerType", pkt.ServerType }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "Direction", pkt.Direction.ToString() }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "Type", $"0x{pkt.Type:X4}" }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "DeclaredLength", pkt.DeclaredLength.ToString() }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "Tag", pkt.Tag }));
+                packetFieldsView.Items.Add(new ListViewItem(new[] { "Description", pkt.Description }));
 
-                foreach (var kv in info.Fields)
+                foreach (var kv in pkt.Fields)
                 {
                     packetFieldsView.Items.Add(new ListViewItem(new[] { kv.Key, kv.Value?.ToString() ?? "" }));
                 }

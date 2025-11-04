@@ -5,7 +5,7 @@
        1) Blowfish-based encryption/decryption hooks (payload; header stays clear-text).
        2) Basic Conquer packet parsing structure (Little Endian, [Length, Type] header, optional footer).
        3) Automatic reconnection logic (session-level resync/backoff on decrypt/parse failures).
-       4) Packet tagging and field extraction for visualization in the GUI.
+       4) Packet tagging and field extraction for visualization in the GUI using ConquerPacket.
    - Provides a safe, pass-through fallback when Blowfish engine is not available.
    - Stateless across processes, but maintains per-connection session state via ConditionalWeakTable.
 
@@ -58,15 +58,13 @@ public class ConquerClassicLordsHandler : IConquerProtocolHandler
         // Add more mappings here
     };
 
-    public byte[] ProcessClientToServer(byte[] data, ConnectionContext context, out PacketInfo info)
+    public byte[] ProcessClientToServer(byte[] data, ConnectionContext context, out ConquerPacket packet)
     {
         var session = _sessions.GetValue(context, _ => new SessionState());
-        info = CreateDefaultInfo(context, PacketDirection.ClientToServer);
 
         if (session.IsInBackoff())
         {
-            info.Description = "Dropped during backoff";
-            info.RawFrame = Array.Empty<byte>();
+            packet = BuildPacketSafe(data, context, PacketDirection.ClientToServer, valid: false, "Dropped during backoff");
             return Array.Empty<byte>();
         }
 
@@ -82,37 +80,31 @@ public class ConquerClassicLordsHandler : IConquerProtocolHandler
                 throw new ArgumentException("Malformed declared length.");
 
             int packetSize = declaredLength;
-            _ = DetectFooterSize(data, packetSize, data.Length); // Footer ignored
+            _ = DetectFooterSize(data, packetSize, data.Length); // Footer ignored here
 
             int payloadLength = packetSize - 4;
             var payloadSpan = payloadLength > 0 ? new ReadOnlySpan<byte>(data, 4, payloadLength) : ReadOnlySpan<byte>.Empty;
 
             EnsureCipherInitialized(context, session, isClientToServer: true);
 
-            byte[] decryptedPayload = session.EncryptionEnabled && payloadLength > 0
+            byte[] analyzedPayload = session.EncryptionEnabled && payloadLength > 0
                 ? ProcessPayloadDecrypt(session, payloadSpan)
                 : payloadSpan.ToArray();
 
-            // Analyze/Tag
-            var parsed = ConquerPacket.Parse((ushort)packetSize, type, decryptedPayload);
-            TagAndDescribe(parsed);
+            // Build ConquerPacket model from the raw data (header+payload only)
+            packet = ConquerPacket.Parse(new ReadOnlySpan<byte>(data, 0, packetSize), context.ConnectionId, context.TargetServerType ?? "?", PacketDirection.ClientToServer);
 
-            // Fill PacketInfo for GUI
-            info.DeclaredLength = parsed.Length;
-            info.Type = parsed.Type;
-            info.Tag = parsed.Tag;
-            info.Description = parsed.Description;
-            info.Payload = decryptedPayload;
-            info.RawFrame = data[..packetSize]; // header+payload only
+            // Tag and annotate using the analyzed (potentially decrypted) payload
+            TagAndDescribe(packet, analyzedPayload);
 
-            // Re-encrypt payload for forwarding if enabled
-            byte[] outPayload = session.EncryptionEnabled && parsed.Payload.Length > 0
-                ? ProcessPayloadEncrypt(session, parsed.Payload)
-                : parsed.Payload;
+            // Re-encrypt payload for forwarding if enabled (header remains clear-text)
+            byte[] outPayload = session.EncryptionEnabled && analyzedPayload.Length > 0
+                ? ProcessPayloadEncrypt(session, analyzedPayload)
+                : analyzedPayload;
 
             byte[] outFrame = new byte[4 + outPayload.Length];
-            BitConverter.TryWriteBytes(new Span<byte>(outFrame, 0, 2), parsed.Length);
-            BitConverter.TryWriteBytes(new Span<byte>(outFrame, 2, 2), parsed.Type);
+            BitConverter.TryWriteBytes(new Span<byte>(outFrame, 0, 2), declaredLength);
+            BitConverter.TryWriteBytes(new Span<byte>(outFrame, 2, 2), type);
             Buffer.BlockCopy(outPayload, 0, outFrame, 4, outPayload.Length);
 
             session.ResetFailures();
@@ -121,18 +113,14 @@ public class ConquerClassicLordsHandler : IConquerProtocolHandler
         catch (Exception ex)
         {
             session.RegisterFailure();
-            if (ex is not OperationCanceledException) session.TriggerBackoffAndReset();
-            info.Description = $"Error: {ex.Message}";
-            info.RawFrame = Array.Empty<byte>();
+            session.TriggerBackoffAndReset();
+            packet = BuildPacketSafe(data, context, PacketDirection.ClientToServer, valid: false, $"Error: {ex.Message}");
             return Array.Empty<byte>(); // Drop to let client re-sync/reconnect
         }
     }
 
-    public byte[] ProcessServerToClient(byte[] data, ConnectionContext context, out PacketInfo info)
+    public byte[] ProcessServerToClient(byte[] data, ConnectionContext context, out ConquerPacket packet)
     {
-        var session = _sessions.GetValue(context, _ => new SessionState());
-        info = CreateDefaultInfo(context, PacketDirection.ServerToClient);
-
         try
         {
             if (data == null || data.Length < 4)
@@ -150,31 +138,17 @@ public class ConquerClassicLordsHandler : IConquerProtocolHandler
             int payloadLength = packetSize - 4;
             var payloadSpan = payloadLength > 0 ? new ReadOnlySpan<byte>(data, 4, payloadLength) : ReadOnlySpan<byte>.Empty;
 
-            // By default, we DO NOT decrypt server->client payload for analysis; adjust if needed:
-            bool decryptServerSide = false;
-            byte[] analyzedPayload = decryptServerSide && session.CipherInitialized
-                ? session.CipherDecrypt(payloadSpan)
-                : payloadSpan.ToArray();
+            // We do not decrypt server->client by default
+            byte[] analyzedPayload = payloadSpan.ToArray();
 
-            var parsed = ConquerPacket.Parse((ushort)packetSize, type, analyzedPayload);
-            TagAndDescribe(parsed);
+            packet = ConquerPacket.Parse(new ReadOnlySpan<byte>(data, 0, packetSize), context.ConnectionId, context.TargetServerType ?? "?", PacketDirection.ServerToClient);
+            TagAndDescribe(packet, analyzedPayload);
 
-            info.DeclaredLength = parsed.Length;
-            info.Type = parsed.Type;
-            info.Tag = parsed.Tag;
-            info.Description = parsed.Description;
-            info.Payload = analyzedPayload;
-            info.RawFrame = data[..packetSize];
-
-            // Forward packet as-is (no modification on server->client for now)
-            session.ResetFailures();
             return data;
         }
         catch (Exception ex)
         {
-            // For server->client we do not apply backoff; just forward raw to avoid breaking session.
-            info.Description = $"Parse error (forwarded raw): {ex.Message}";
-            info.RawFrame = data ?? Array.Empty<byte>();
+            packet = BuildPacketSafe(data ?? Array.Empty<byte>(), context, PacketDirection.ServerToClient, valid: false, $"Parse error (forwarded raw): {ex.Message}");
             return data ?? Array.Empty<byte>();
         }
     }
@@ -184,15 +158,27 @@ public class ConquerClassicLordsHandler : IConquerProtocolHandler
 
     // ---- Internal helpers / tagging ----
 
-    private static PacketInfo CreateDefaultInfo(ConnectionContext ctx, PacketDirection dir)
+    private static ConquerPacket BuildPacketSafe(byte[] raw, ConnectionContext ctx, PacketDirection dir, bool valid, string message)
     {
-        return new PacketInfo
+        if (!ConquerPacket.TryParse(raw, ctx.ConnectionId, ctx.TargetServerType ?? "?", dir, out var pkt))
         {
-            ConnectionId = ctx.ConnectionId,
-            ServerType = ctx.TargetServerType ?? "?",
-            Direction = dir,
-            TimestampUtc = DateTime.UtcNow
-        };
+            // When even TryParse fails, we still emit a minimal packet model
+            pkt = new ConquerPacket
+            {
+                ConnectionId = ctx.ConnectionId,
+                ServerType = ctx.TargetServerType ?? "?",
+                Direction = dir,
+                TimestampUtc = DateTime.UtcNow,
+                DeclaredLength = 0,
+                Type = 0,
+                RawFrame = raw,
+                RawWithFooter = raw,
+                Description = message,
+                Tag = "Unknown"
+            };
+        }
+        pkt.Description = message;
+        return pkt;
     }
 
     private static int DetectFooterSize(byte[] buffer, int contentLength, int realLength)
@@ -255,19 +241,19 @@ public class ConquerClassicLordsHandler : IConquerProtocolHandler
         }
     }
 
-    private static void TagAndDescribe(ConquerPacket pkt)
+    private static void TagAndDescribe(ConquerPacket pkt, byte[] analyzedPayload)
     {
         string tag = PacketTags.TryGetValue(pkt.Type, out var name) ? name : "Unknown";
         pkt.Tag = tag;
 
-        // Very light field extraction example for MsgWalk (0x2715) using the tutorial offsets
-        if (pkt.Type == 0x2715 && pkt.Payload.Length >= 24)
+        // Example field extraction for MsgWalk (0x2715)
+        if (pkt.Type == 0x2715 && analyzedPayload.Length >= 24)
         {
-            uint directionRaw = BitConverter.ToUInt32(pkt.Payload, 0);
-            uint characterId = BitConverter.ToUInt32(pkt.Payload, 4);
-            uint moveType = BitConverter.ToUInt32(pkt.Payload, 8);
-            uint timestamp = BitConverter.ToUInt32(pkt.Payload, 12);
-            uint mapId = BitConverter.ToUInt32(pkt.Payload, 16);
+            uint directionRaw = BitConverter.ToUInt32(analyzedPayload, 0);
+            uint characterId = BitConverter.ToUInt32(analyzedPayload, 4);
+            uint moveType = BitConverter.ToUInt32(analyzedPayload, 8);
+            uint timestamp = BitConverter.ToUInt32(analyzedPayload, 12);
+            uint mapId = BitConverter.ToUInt32(analyzedPayload, 16);
 
             pkt.Fields["DirectionRaw"] = directionRaw;
             pkt.Fields["DirectionMod8"] = directionRaw % 8;
@@ -280,7 +266,7 @@ public class ConquerClassicLordsHandler : IConquerProtocolHandler
         }
         else
         {
-            pkt.Description = $"Type=0x{pkt.Type:X4}, Payload={pkt.Payload.Length} bytes";
+            pkt.Description = $"Type=0x{pkt.Type:X4}, Payload={Math.Max(0, pkt.DeclaredLength - 4)} bytes";
         }
     }
 
@@ -343,34 +329,6 @@ public class ConquerClassicLordsHandler : IConquerProtocolHandler
         {
             if (!EncryptionEnabled || _cipher == null) return input.ToArray();
             return _cipher.Encrypt(input);
-        }
-    }
-
-    private sealed class ConquerPacket
-    {
-        public ushort Length { get; }
-        public ushort Type { get; }
-        public byte[] Payload { get; }
-
-        public string Tag { get; set; } = "Unknown";
-        public string Description { get; set; } = string.Empty;
-        public Dictionary<string, object> Fields { get; } = new();
-
-        private ConquerPacket(ushort length, ushort type, byte[] payload)
-        {
-            Length = length;
-            Type = type;
-            Payload = payload;
-        }
-
-        public static ConquerPacket Parse(ushort declaredLength, ushort type, byte[] payloadBytes)
-        {
-            if (declaredLength < 4) throw new ArgumentException("Declared length must be >= 4.");
-            if (payloadBytes == null) throw new ArgumentNullException(nameof(payloadBytes));
-            if (declaredLength != (4 + payloadBytes.Length))
-                throw new ArgumentException("Declared length/header does not match payload length.");
-
-            return new ConquerPacket(declaredLength, type, payloadBytes);
         }
     }
 
