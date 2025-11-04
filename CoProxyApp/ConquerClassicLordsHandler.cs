@@ -43,7 +43,6 @@
 */
 
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -183,7 +182,6 @@ public class ConquerClassicLordsHandler : IConquerProtocolHandler
         if (tail <= 0) return 0;
 
         // Check for known footers at the tail end
-        // The footer might be exact at the end or accompanied by extra transport data. We search from 'contentLength'.
         if (tail >= FooterTQClient.Length)
         {
             var span = new ReadOnlySpan<byte>(buffer, contentLength, tail);
@@ -260,7 +258,15 @@ public class ConquerClassicLordsHandler : IConquerProtocolHandler
         public void InitCipher(byte[] key)
         {
             // Attempt to create Blowfish via reflection (BouncyCastle) and fall back if unavailable
-            _cipher = BlowfishAdapter.TryCreate(key) ?? new XorFallbackCipher(key);
+            var bf = BlowfishAdapter.TryCreate(key);
+            if (bf != null)
+            {
+                _cipher = bf; // BlowfishAdapter implements ICipherAdapter
+            }
+            else
+            {
+                _cipher = new XorFallbackCipher(key);
+            }
             CipherInitialized = true;
         }
 
