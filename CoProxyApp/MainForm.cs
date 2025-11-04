@@ -1,3 +1,19 @@
+/*
+ File: MainForm.cs
+ Responsibility:
+   - WinForms UI for configuring and running the proxy.
+   - Provides inputs for Login/Game ports, remote server address, and handler selection.
+   - Displays real-time connection status (client and remote) for Login and Game via icons.
+   - Starts/stops the proxy and marshals event callbacks to the UI thread.
+
+ UI/UX:
+   - Start/Stop buttons manage proxy lifecycle.
+   - Green/Red circular icons reflect connected/disconnected statuses per side/type.
+
+ Threading:
+   - Event handlers from proxy are invoked on background threads and marshaled via Control.Invoke.
+*/
+
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -5,6 +21,9 @@ using System.Windows.Forms;
 
 namespace CoProxyApp
 {
+    /// <summary>
+    /// Main WinForms window to configure and control the Conquer proxy.
+    /// </summary>
     public partial class MainForm : Form
     {
         private List<IConquerProtocolHandler> handlers;
@@ -18,13 +37,13 @@ namespace CoProxyApp
         private Button StopProxyButton = new Button() { Text = "Stop Proxy", Location = new Point(120, 220), Width = 200 };
         private Label StatusLabel = new Label() { Location = new Point(10, 260), Width = 420, ForeColor = Color.Green, Font = new Font(FontFamily.GenericSansSerif, 10, FontStyle.Bold) };
 
-        // Icones d'état (feux) pour connexions
+        // Status indicator icons for connections
         private PictureBox LoginClientStatusIcon = new PictureBox() { Location = new Point(340, 20), Size = new Size(16, 16) };
         private PictureBox LoginServerStatusIcon = new PictureBox() { Location = new Point(340, 50), Size = new Size(16, 16) };
         private PictureBox GameClientStatusIcon = new PictureBox() { Location = new Point(340, 90), Size = new Size(16, 16) };
         private PictureBox GameServerStatusIcon = new PictureBox() { Location = new Point(340, 120), Size = new Size(16, 16) };
 
-        // Labels fixes de description des statuts
+        // Fixed description labels of the statuses
         private Label LoginClientLabelDesc = new Label() { Text = "Login Client", Location = new Point(260, 20), AutoSize = true };
         private Label LoginServerLabelDesc = new Label() { Text = "Login Server", Location = new Point(260, 50), AutoSize = true };
         private Label GameClientLabelDesc = new Label() { Text = "Game Client", Location = new Point(260, 90), AutoSize = true };
@@ -35,6 +54,9 @@ namespace CoProxyApp
         private Bitmap greenCircle;
         private Bitmap redCircle;
 
+        /// <summary>
+        /// Initializes the form, loads available handlers, and sets initial UI state.
+        /// </summary>
         public MainForm()
         {
             InitializeControls();
@@ -54,6 +76,9 @@ namespace CoProxyApp
             UpdateStatusIcons(false, false, false, false);
         }
 
+        /// <summary>
+        /// Creates and configures all controls, wires event handlers, and initializes status icons.
+        /// </summary>
         private void InitializeControls()
         {
             this.Text = "Conquer Proxy Configuration";
@@ -80,29 +105,32 @@ namespace CoProxyApp
             this.Controls.Add(StopProxyButton);
             this.Controls.Add(StatusLabel);
 
-            // Ajout des descriptions des icônes statut
+            // Add status label descriptions
             this.Controls.Add(LoginClientLabelDesc);
             this.Controls.Add(LoginServerLabelDesc);
             this.Controls.Add(GameClientLabelDesc);
             this.Controls.Add(GameServerLabelDesc);
 
-            // Ajout des icônes statut
+            // Add status icons
             this.Controls.Add(LoginClientStatusIcon);
             this.Controls.Add(LoginServerStatusIcon);
             this.Controls.Add(GameClientStatusIcon);
             this.Controls.Add(GameServerStatusIcon);
 
-            // Création des images cercle rouge/vert
+            // Create green/red circle bitmaps
             greenCircle = CreateCircleBitmap(Color.Green, 16);
             redCircle = CreateCircleBitmap(Color.Red, 16);
 
-            // Initialiser tous statuts à rouge (inactifs)
+            // Initialize all status indicators to red (inactive)
             SetStatusIcon(LoginClientStatusIcon, false);
             SetStatusIcon(LoginServerStatusIcon, false);
             SetStatusIcon(GameClientStatusIcon, false);
             SetStatusIcon(GameServerStatusIcon, false);
         }
 
+        /// <summary>
+        /// Helper to create a filled circular bitmap with the given color and size.
+        /// </summary>
         private Bitmap CreateCircleBitmap(Color color, int diameter)
         {
             Bitmap bmp = new Bitmap(diameter, diameter);
@@ -117,11 +145,17 @@ namespace CoProxyApp
             return bmp;
         }
 
+        /// <summary>
+        /// Sets the image of a PictureBox to red or green based on state.
+        /// </summary>
         private void SetStatusIcon(PictureBox pb, bool state)
         {
             pb.Image = state ? greenCircle : redCircle;
         }
 
+        /// <summary>
+        /// Updates all status icons in one call.
+        /// </summary>
         private void UpdateStatusIcons(bool loginClient, bool loginServer, bool gameClient, bool gameServer)
         {
             SetStatusIcon(LoginClientStatusIcon, loginClient);
@@ -130,6 +164,9 @@ namespace CoProxyApp
             SetStatusIcon(GameServerStatusIcon, gameServer);
         }
 
+        /// <summary>
+        /// Starts the proxy using input values; validates inputs and wires proxy events to UI updates.
+        /// </summary>
         private void OnStartProxyClicked(object? sender, EventArgs e)
         {
             if (!int.TryParse(LoginPortEntry.Text, out int loginPort) ||
@@ -217,6 +254,9 @@ namespace CoProxyApp
             StatusLabel.Text = $"Proxy started on Login:{loginPort}, Game:{gamePort} relaying to {RemoteServerAddressEntry.Text}";
         }
 
+        /// <summary>
+        /// Stops the proxy and resets UI indicators.
+        /// </summary>
         private void OnStopProxyClicked(object? sender, EventArgs e)
         {
             if (proxy is null)
@@ -233,6 +273,9 @@ namespace CoProxyApp
             StatusLabel.Text = "Proxy stopped!";
         }
 
+        /// <summary>
+        /// Ensures the proxy is stopped when the form is closing.
+        /// </summary>
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             base.OnFormClosing(e);
